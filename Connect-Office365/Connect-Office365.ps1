@@ -48,9 +48,13 @@ Function Get-O365Credentials {
     )
     #This function will be called a few times,
     #Check to see if it has already been entered or the request if forced (eg. bad password check)
-    if(($force -eq $true) -or ($script:Credentials -eq $null)){
+
+    if(($force -eq $true) -or ($Script:O365Credentials -eq $null)){
+
         Log-write -logpath $Script:LogPath -linevalue "`t`tEnter your Office 365 admin credentials"
-        $script:Credentials = Get-Credential -Message "Enter your Office 365 admin credentials"
+
+        $Script:O365Credentials = Get-Credential -Message "Enter your Office 365 admin credentials"
+
     }#endif
 } #end function
 
@@ -74,31 +78,39 @@ Function Connect-MSOL{
     }
     process{
         if($CurrentMSOLStatus){
-        #The MSOL may be connected but the credentials may be clear, check this is not the case
-        #The other functions in this module use this function to confirm the credentials and MSOL exist/connect
-        If ($script:Credentials -eq $null){
-            Get-O365Credentials
-        }
+            #The MSOL may be connected but the credentials may be clear, check this is not the case
+            #The other functions in this module use this function to confirm the credentials and MSOL exist/connect
+            If ($Script:O365Credentials -eq $null){
 
-        #MSOL is already connected, no need for output clutter
-        return $true #MSOL is connected
+                Get-O365Credentials
+                $CurrentMSOLStatus = Get-MsolDomain -ErrorAction SilentlyContinue
+            }
+
+
+            #MSOL is already connected, no need for output clutter
+            return $true #MSOL is connected
 
         } else {
+
             Log-write -logpath $Script:LogPath -linevalue "`tConnecting to Microsoft Online (MSOL)"
+            
             try{
                 
-                #Users credentials may be invalid so try to connect 3 times, any more risks
-                #locking the users account.
+                # Users credentials may be invalid so try to connect 3 times, any more risks
+                # locking the users account.
                 $i=0 #Start a counter
                 Do {
-                    #Check the connect sequence has run less than 3 times
+                    # Check the connect sequence has run less than 3 times
                     if ($i -ge 3){
                         Log-write -logpath $Script:LogPath -linevalue "`t`tThe 3rd login attempt has failed, aborting script to avoid account lockout"
                         throw #cause an error, go to the catch statement
                     }
 
-                    #Attempt to connect to MSOL
-                    Connect-MsolService -Credential $script:Credentials -ErrorAction SilentlyContinue -ErrorVariable ProcessError
+                    # Attempt to connect to MSOL
+                    #Create a local copy of the Credentials, some of the O365 connecting modules seem to empty the variable after connecting
+                    $MSOLCredentials = $Script:O365Credentials
+
+                    Connect-MsolService -Credential $MSOLCredentials -ErrorAction SilentlyContinue -ErrorVariable ProcessError
                     $CurrentMSOLStatus = Get-MsolDomain -ErrorAction SilentlyContinue #See if the MSOL is connected by listing the MSOLDomains
 
                     if($CurrentMSOLStatus){
@@ -106,13 +118,18 @@ Function Connect-MSOL{
                         Log-write -logpath $Script:LogPath -linevalue "`t`tMSOL connected"
                         $i = 4
                     } else {
-                        #If the domain list is empty MSOL is not connected
-                        #Request the credentials again, with force set to true as the credentials variable
-                        #is not currently empty, it's just didnt connect, then add 1 (++) to the counter
+                        # If the domain list is empty MSOL is not connected
+                        # Request the credentials again, with force set to true as the credentials variable
+                        # is not currently empty, it's just didnt connect, then add 1 (++) to the counter
+                        
                         Log-write -logpath $Script:LogPath -linevalue "`t`tCredentials invalid, please try again"
+                        
                         Get-O365Credentials -force $true
+                        
                         $i ++
+
                     }
+                
                 } Until ($CurrentMSOLStatus) #If the MSOL is connected the 'do' loop doesnt need to continue
 
                 return $true #MSOL is connected
@@ -120,9 +137,11 @@ Function Connect-MSOL{
             }catch{
                 Log-Error -LogPath $Script:LogPath -ErrorDesc "Failed to connect to MSOL,check 'Microsoft Online Service Sign-in Assistant for IT Professionals' is installed`n`t$_.Exception" -ExitGracefully $True
             }
+
         }#EndProcess
     }#EndIf
 }#EndFunction
+
 
 
 Function Connect-SFBOnline{
@@ -149,6 +168,7 @@ Function Connect-SFBOnline{
         }
 
 
+     
         if(Connect-MSOL){
             #If MSOL is connected or connects, nothing to do
         }else{
@@ -177,11 +197,16 @@ Function Connect-SFBOnline{
                     #Failed to start, assume the user isnt an admin or hasnt run script as admin
                     #Prompt to run the script as an admin user
                     try {
+                        
                         Start-Process powershell -Verb runAs -ArgumentList "start-service winrm" -Wait
+                        
                         #Check to see if the service is now running
                         if ((get-service winrm).status -ne "Running"){
+                            
                             log-Error -LogPath $Script:LogPath -ErrorDesc "Unable to start the WinRM service, please start manually" -ExitGracefully $True
+                        
                         } else {
+                                               
                             Log-write -logpath $Script:LogPath -linevalue "`t`tWinRM service started"
                         }
                     } catch {
@@ -190,19 +215,49 @@ Function Connect-SFBOnline{
                  }#EndCatch
             }#EndIf (WinRM)
 
+            Log-write -logpath $Script:LogPath -linevalue "`t`tCreating Skype PS session"
 
-            Log-write -logpath $Script:LogPath -linevalue "`tCreating Skypesession"
+            # MSOL is connected so we can assume this session has valid O365 credentials stored as $Script:O365Credentials
+            
+            # The New-CSOnlineSessions command empties the credentials after use, so store a temporary copy of the information    
+            $SFBOCredentials = $Script:O365Credentials
 
-            #MSOL is connected so we can assume this session has valid O365 credentials stored as $Script:Credentials
-            #Attempt to connect
-            $script:sfboSession = New-CsOnlineSession -Credential $script:Credentials
-            Import-PSSession $script:sfboSession -DisableNameChecking | Out-Null
+            # The correct way to connect to SFBOnline is like this
+            try{
+                # Sometimes if the autodiscover for the lync service is incorrect is just doesnt work, this will error
+                # If the session fails to connect, process the failure as an error and contnue, this should trigger the catch statement
+                $script:sfboSession = New-CsOnlineSession -Credential $Script:SFBOCredentials -ErrorAction ProcessError #-Verbose
+            
+            }Catch{
+                Log-write -logpath $Script:LogPath -linevalue "`t`t`tAutomatic Skype For Business endpoint discovery failed, trying to use manual 'AdminDomain'"
+                
+                # The $Script:AdminDomain defined in the config file (optional) allows us to bypass the autodiscover failure.
+
+
+                If ($Script:AdminDomain -eq $null){ 
+                    Log-Error -LogPath $Script:LogPath -ErrorDesc "Unable to connect using automatic endpoint discovery, add the 'Script:AdminDomain' variable config file and define it manually." -ExitGracefully $True
+                }
+                
+
+
+                $script:sfboSession = New-CsOnlineSession -Credential $Script:SFBOCredentials -OverrideAdminDomain $Script:AdminDomain #-Verbose
+                Log-write -logpath $Script:LogPath -linevalue "`t`t`tSkype PS session built, connecting..."
+             }
+              
+            # Create the session                                      
+            Import-PSSession $script:sfboSession -DisableNameChecking -AllowClobber -Verbose | out-null
+            
+            Log-write -logpath $Script:LogPath -linevalue "`t`t`t`tConnected"
 
         }catch{
+
             Log-Error -LogPath $Script:LogPath -ErrorDesc "Failed to connect to Skype For Business Online`n$_.Exception" -ExitGracefully $True
+
         }#EndTry
     }#EndProcess
 }#EndFunction
+
+
 
 Function Disconnect-SFBOnline{
     <# 
@@ -253,35 +308,58 @@ Function Connect-ExOnline{
             Connect-ExOnline
         
     #>
+
     begin{
+    
+        Log-write -logpath $Script:LogPath -linevalue "`tConnecting to Exchange Online"
+
         if(Connect-MSOL){
-            #If MSOL is connected or connects, nothing to do
+
+            # If MSOL is connected or connects, nothing to do
+
         }else{
-            #If MSOL fails to connect, the Connect-MSOL module will show the nessessary output
-            #Throw an error and abort the script
+
+            # If MSOL fails to connect, the Connect-MSOL module will show the nessessary output
+            # Throw an error and abort the script
+
             Log-Error -LogPath $Script:LogPath -ErrorDesc "$_.Exception" -ExitGracefully $True
+
         }  
 
-        Log-write -logpath $Script:LogPath -linevalue "`tConnecting to Exchange Online"
- 
+
+
     }
     Process{
+
         try{
-            Log-write -logpath $Script:LogPath -linevalue "`t`tCreating Session"
 
-            #MSOL is connected so we can assume this session has valid O365 credentials stored as $Script:Credentials
-            #Attempt to connect
-            $script:exoSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "https://outlook.office365.com/powershell-liveid/" -Credential $script:Credentials -Authentication "Basic" -AllowRedirection
 
-            Import-PSSession $script:exoSession -DisableNameChecking | Out-Null
+            Log-write -logpath $Script:LogPath -linevalue "`t`tCreating Exchange Online PS session"
+             
+            # MSOL is connected so we can assume this session has valid O365 credentials stored as $Script:O365Credentials
+            # Attempt to connect
+            
+            # Store a temporary copy of the 365 Creds
+            $EXOCredentials = $Script:O365Credentials
 
-            Log-write -logpath $Script:LogPath -linevalue "`t`tConnected to Exchange Online"
+
+            $script:exoSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "https://outlook.office365.com/powershell-liveid/" -Credential $EXOCredentials -Authentication Basic -AllowRedirection #-verbose
+            Log-write -logpath $Script:LogPath -linevalue "`t`t`tExchange Online PS session built, connecting..."
+            
+            Import-PSSession $script:exoSession -DisableNameChecking -AllowClobber | Out-Null
+            
+
+            Log-write -logpath $Script:LogPath -linevalue "`t`t`t`tConnected"
  
         }catch{
+
             Log-Error -LogPath $Script:LogPath -ErrorDesc "Failed to connect to Exchange Online`n$_.Exception" -ExitGracefully $True
+        
         }#EndTry
     }#EndProcess
 }#EndFunction
+
+
 
 Function Disconnect-ExOnline{
     <# 
@@ -344,21 +422,28 @@ Function Connect-SCCOnline{
     }
     Process{
         try{
-            Log-write -logpath $Script:LogPath -linevalue "`t`tCreating Session"
+            Log-write -logpath $Script:LogPath -linevalue "`t`tCreating Security and Compliance Center PS Session"
 
-            #MSOL is connected so we can assume this session has valid O365 credentials stored as $Script:Credentials
+            # Store a temporary copy of the 365 Creds
+            $SCCOCredentials = $Script:O365Credentials
+            
+            #MSOL is connected so we can assume this session has valid O365 credentials stored as $Script:O365Credentials
             #Attempt to connect
-            $script:sccoSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $script:Credentials -Authentication "Basic" -AllowRedirection
+            $script:sccoSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $SCCOCredentials -Authentication "Basic" -AllowRedirection
 
-            Import-PSSession $script:sccoSession -Prefix cc -DisableNameChecking | Out-Null
+            Log-write -logpath $Script:LogPath -linevalue "`t`t`tSecurity and Compliance Center PS session built, connecting..."
 
-            Log-write -logpath $Script:LogPath -linevalue "`t`tConnected to Security & Compliance Center Online"
+            Import-PSSession $script:sccoSession -Prefix cc -DisableNameChecking -AllowClobber | Out-Null
+
+            Log-write -logpath $Script:LogPath -linevalue "`t`t`t`tConnected"
  
         }catch{
             Log-Error -LogPath $Script:LogPath -ErrorDesc "Failed to connect to Security & Compliance Center Online`n$_.Exception" -ExitGracefully $True
         }#EndTry
     }#EndProcess
 }#EndFunction
+
+
 
 Function Disconnect-SCCOnline{
     <# 
@@ -408,13 +493,14 @@ Function Connect-Office365{
         
     #>
     try{
-        Connect-MSOL #Not strictly nessessary as the other 2 will call this module, but this is the proper order
 
-        Connect-SFBOnline
-  
+
+
+
         Connect-ExOnline
 
         Connect-SCCOnline
+        Connect-SFBOnline
                
     }catch{
         Log-Error -LogPath $Script:LogPath -ErrorDesc "Failed to Connect to Office 365, please review logs" -ExitGracefully $True
@@ -435,16 +521,21 @@ Function Disconnect-Office365{
         
     #>
     try{
+ 
 
         Disconnect-SFBOnline
-  
+        
+
         Disconnect-ExOnline
+             
 
         Disconnect-SCCOnline
 
-        $script:credentials = $null
+        $Script:O365Credentials = $null
+
                 
     }catch{
         Log-Error -LogPath $Script:LogPath -ErrorDesc "Failed to disconnect to Office 365, please review logs" -ExitGracefully $True
     }#EndTry
 }#EndFunction
+
