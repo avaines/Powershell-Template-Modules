@@ -166,16 +166,6 @@ Function Connect-SFBOnline{
         }else{
             Log-Error -LogPath $Script:LogPath -ErrorDesc "Please run this script with administrator privileges" -ExitGracefully $True
         }
-
-
-     
-        if(Connect-MSOL){
-            #If MSOL is connected or connects, nothing to do
-        }else{
-            #If MSOL fails to connect, the Connect-MSOL module will show the nessessary output
-            #Throw an error and abort the script
-            Log-Error -LogPath $Script:LogPath -ErrorDesc "$_.Exception" -ExitGracefully $True
-        }  
     }
     Process{
         try{
@@ -313,21 +303,6 @@ Function Connect-ExOnline{
     
         Log-write -logpath $Script:LogPath -linevalue "`tConnecting to Exchange Online"
 
-        if(Connect-MSOL){
-
-            # If MSOL is connected or connects, nothing to do
-
-        }else{
-
-            # If MSOL fails to connect, the Connect-MSOL module will show the nessessary output
-            # Throw an error and abort the script
-
-            Log-Error -LogPath $Script:LogPath -ErrorDesc "$_.Exception" -ExitGracefully $True
-
-        }  
-
-
-
     }
     Process{
 
@@ -409,14 +384,6 @@ Function Connect-SCCOnline{
         
     #>
     begin{
-        if(Connect-MSOL){
-            #If MSOL is connected or connects, nothing to do
-        }else{
-            #If MSOL fails to connect, the Connect-MSOL module will show the nessessary output
-            #Throw an error and abort the script
-            Log-Error -LogPath $Script:LogPath -ErrorDesc "$_.Exception" -ExitGracefully $True
-        }  
-
         Log-write -logpath $Script:LogPath -linevalue "`tConnecting to Security & Compliance Center Online"
  
     }
@@ -494,7 +461,13 @@ Function Connect-Office365{
     #>
     try{
 
-
+        if(Connect-MSOL){
+            #If MSOL is connected or connects, nothing to do
+        }else{
+            #If MSOL fails to connect, the Connect-MSOL module will show the nessessary output
+            #Throw an error and abort the script
+            Log-Error -LogPath $Script:LogPath -ErrorDesc "$_.Exception" -ExitGracefully $True
+        }  
 
 
         Connect-ExOnline
